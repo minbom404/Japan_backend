@@ -1,40 +1,39 @@
-"""
-BrewGo – FastAPI Backend
-Run: uvicorn main:app --reload
-"""
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 import uuid
+import os
 
 app = FastAPI(title="BrewGo API", version="1.0.0")
 
+# ✅ CORS (allow all for now)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─── Enums ────────────────────────────────────────────────────────────────────
+# ─── Enums ─────────────────────────────────────────
 
 class OrderStatus(str, Enum):
-    pending  = "pending"
-    making   = "making"
-    ready    = "ready"
+    pending = "pending"
+    making = "making"
+    ready = "ready"
     collected = "collected"
     cancelled = "cancelled"
 
 class UserRole(str, Enum):
-    admin    = "admin"
-    barista  = "barista"
-    cashier  = "cashier"
+    admin = "admin"
+    barista = "barista"
+    cashier = "cashier"
     customer = "customer"
 
-# ─── Models ───────────────────────────────────────────────────────────────────
+# ─── Models ────────────────────────────────────────
 
 class MenuItem(BaseModel):
     id: str
@@ -78,64 +77,47 @@ class MenuItemUpdate(BaseModel):
     price: Optional[float] = None
     available: Optional[bool] = None
 
-# ─── In-memory store (swap with PostgreSQL in production) ─────────────────────
+# ─── In-memory DB ──────────────────────────────────
 
 MENU: List[MenuItem] = [
-    MenuItem(id="1", name="Espresso",       description="Pure concentrated shot",    category="Espresso", price=2.50, emoji="☕"),
-    MenuItem(id="2", name="Americano",      description="Espresso with hot water",   category="Espresso", price=3.00, emoji="🫖"),
-    MenuItem(id="3", name="Flat White",     description="Micro-foam milk blend",     category="Latte",    price=4.00, emoji="🥛"),
-    MenuItem(id="4", name="Caramel Latte",  description="Vanilla & caramel swirl",   category="Latte",    price=4.50, emoji="🍮"),
-    MenuItem(id="5", name="Matcha Latte",   description="Ceremonial grade matcha",   category="Latte",    price=4.75, emoji="🍵"),
-    MenuItem(id="6", name="Cold Brew",      description="12-hour steeping process",  category="Cold",     price=4.25, emoji="🧊"),
-    MenuItem(id="7", name="Iced Mocha",     description="Dark choc espresso",        category="Cold",     price=5.00, emoji="🍫"),
-    MenuItem(id="8", name="Croissant",      description="Butter, flaky pastry",      category="Food",     price=3.50, emoji="🥐"),
-    MenuItem(id="9", name="Avocado Toast",  description="Sourdough & sea salt",      category="Food",     price=6.50, emoji="🥑"),
-    MenuItem(id="10",name="Blueberry Muffin",description="Baked fresh daily",        category="Food",     price=3.00, emoji="🫐"),
+    MenuItem(id="1", name="Espresso", description="Pure shot", category="Espresso", price=2.5),
+    MenuItem(id="2", name="Latte", description="Milk coffee", category="Latte", price=4.0),
 ]
 
 ORDERS: List[Order] = []
+STAFF: List[StaffMember] = []
 
-STAFF: List[StaffMember] = [
-    StaffMember(id="s1", name="Marco Silva",  role=UserRole.admin,   email="marco@brewgo.com"),
-    StaffMember(id="s2", name="Priya Patel",  role=UserRole.barista, email="priya@brewgo.com"),
-    StaffMember(id="s3", name="Jake Monroe",  role=UserRole.barista, email="jake@brewgo.com"),
-    StaffMember(id="s4", name="Yuna Kim",     role=UserRole.barista, email="yuna@brewgo.com"),
-    StaffMember(id="s5", name="Carlos Reyes", role=UserRole.cashier, email="carlos@brewgo.com"),
-    StaffMember(id="s6", name="Nina Okafor",  role=UserRole.cashier, email="nina@brewgo.com"),
-]
+# ─── Health Check (IMPORTANT for Render) ───────────
 
-# ─── Menu Routes ──────────────────────────────────────────────────────────────
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "BrewGo API running"}
+
+# ─── Menu Routes ───────────────────────────────────
 
 @app.get("/menu", response_model=List[MenuItem])
-def get_menu(category: Optional[str] = None):
-    items = [m for m in MENU if m.available]
-    if category:
-        items = [m for m in items if m.category.lower() == category.lower()]
-    return items
-
-@app.get("/menu/{item_id}", response_model=MenuItem)
-def get_menu_item(item_id: str):
-    item = next((m for m in MENU if m.id == item_id), None)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return item
+def get_menu():
+    return [m for m in MENU if m.available]
 
 @app.patch("/menu/{item_id}", response_model=MenuItem)
 def update_menu_item(item_id: str, update: MenuItemUpdate):
     item = next((m for m in MENU if m.id == item_id), None)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+
     for field, value in update.dict(exclude_none=True).items():
         setattr(item, field, value)
+
     return item
 
-# ─── Order Routes ─────────────────────────────────────────────────────────────
+# ─── Orders ────────────────────────────────────────
 
-@app.post("/orders", response_model=Order, status_code=201)
+@app.post("/orders", response_model=Order)
 def create_order(body: OrderCreate):
     total = sum(i.unit_price * i.quantity for i in body.items)
+
     order = Order(
-        id=f"#{str(uuid.uuid4())[:4].upper()}",
+        id=str(uuid.uuid4())[:6],
         customer_name=body.customer_name,
         items=body.items,
         note=body.note or "",
@@ -143,52 +125,48 @@ def create_order(body: OrderCreate):
         total=round(total, 2),
         created_at=datetime.now().isoformat(),
     )
+
     ORDERS.append(order)
     return order
 
 @app.get("/orders", response_model=List[Order])
-def get_orders(status: Optional[OrderStatus] = None):
-    orders = ORDERS
-    if status:
-        orders = [o for o in orders if o.status == status]
-    return sorted(orders, key=lambda o: o.created_at, reverse=True)
-
-@app.get("/orders/{order_id}", response_model=Order)
-def get_order(order_id: str):
-    order = next((o for o in ORDERS if o.id == order_id), None)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
+def get_orders():
+    return ORDERS
 
 @app.patch("/orders/{order_id}/status", response_model=Order)
 def update_order_status(order_id: str, status: OrderStatus):
     order = next((o for o in ORDERS if o.id == order_id), None)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
     order.status = status
     return order
 
-# ─── Staff Routes ─────────────────────────────────────────────────────────────
+# ─── Staff ─────────────────────────────────────────
 
 @app.get("/staff", response_model=List[StaffMember])
 def get_staff():
     return STAFF
 
-@app.post("/staff", response_model=StaffMember, status_code=201)
+@app.post("/staff", response_model=StaffMember)
 def add_staff(member: StaffMember):
     member.id = f"s{len(STAFF)+1}"
     STAFF.append(member)
     return member
 
-# ─── Analytics ────────────────────────────────────────────────────────────────
+# ─── Analytics ─────────────────────────────────────
 
-@app.get("/analytics/summary")
-def get_summary():
-    total_revenue = sum(o.total for o in ORDERS if o.status != OrderStatus.cancelled)
-    active_orders = [o for o in ORDERS if o.status in [OrderStatus.pending, OrderStatus.making]]
+@app.get("/analytics")
+def analytics():
+    total = sum(o.total for o in ORDERS)
     return {
-        "total_orders": len(ORDERS),
-        "total_revenue": round(total_revenue, 2),
-        "active_orders": len(active_orders),
-        "avg_order_value": round(total_revenue / max(len(ORDERS), 1), 2),
+        "orders": len(ORDERS),
+        "revenue": total
     }
+
+# ─── Run locally (Render ignores this) ─────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
